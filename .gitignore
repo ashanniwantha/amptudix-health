@@ -7,4 +7,6 @@
 *.test
 *.out
 .env
+*.env.*
+!.env.example
 credentials.json
