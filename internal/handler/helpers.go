@@ -43,9 +43,9 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, dst
 		var unmarshalTypeError *json.UnmarshalTypeError
 
 		switch {
-		case errors.As(err, syntaxError):
+		case errors.As(err, &syntaxError):
 			RespondError(w, logger, http.StatusBadRequest, "malformed json syntax")
-		case errors.As(err, unmarshalTypeError):
+		case errors.As(err, &unmarshalTypeError):
 			RespondError(w, logger, http.StatusBadRequest, "invalid field type for field: "+unmarshalTypeError.Field)
 		case errors.Is(err, io.EOF):
 			RespondError(w, logger, http.StatusBadRequest, "request body cannot be empty")
