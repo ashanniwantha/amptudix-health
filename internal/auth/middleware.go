@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// contextKey is an unexported struct type used as key
-// for the values we stash in the request context.
+// contextKey is an unexported struct type used as the key
+// for values we stash in the request context.
 type contextKey struct {
 	name string
 }
@@ -22,10 +22,10 @@ var (
 	sessionIDKey = contextKey{"sessionID"}
 )
 
-// UserIDFromContext returns the authenticated user's UUID,
-// if the request passes through Authenticate. The bool is false
-// when the middleware did not run, which would only happen on routes
-// that were explicitly mounted outside the protected group
+// UserIDFromContext returns the authenticated user's UUID if the request
+// passed through Authenticate. The bool is false when the middleware did not
+// run, which would only happen on routes explicitly mounted outside the
+// protected group.
 func UserIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 	id, ok := ctx.Value(userIDKey).(uuid.UUID)
 	return id, ok
@@ -33,7 +33,7 @@ func UserIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 
 // SessionIDFromContext returns the UUID of the user_sessions row that this
 // access token belongs to. Callers that need to revoke (logout) or re-check
-// session-liveness use this to find the right row.
+// session liveness use this to find the right row.
 func SessionIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 	id, ok := ctx.Value(sessionIDKey).(uuid.UUID)
 	return id, ok
@@ -46,25 +46,25 @@ func SessionIDFromContext(ctx context.Context) (uuid.UUID, bool) {
 //  3. Injects the user UUID and session UUID into the request context.
 //  4. Calls the next handler.
 //
-// On any failure it writes a JSON error envelope and stops the chain and
-// the downstream handler never invoked, which makes it safe to assume that
-// if this runs, the context carries a valid user
+// On any failure it writes a JSON error envelope and stops the chain. The
+// downstream handler is never invoked, so it is safe to assume that if it runs,
+// the context carries a valid user.
 //
-// The logger is used to record the reason a token was rejected, and deatils are
-// deliberately not returned to the user (get a flat "unauthorized" message) but
-// is stored within logs to later use for debug and identifying patterns.
+// The logger records the reason a token was rejected. Details are deliberately
+// not returned to the user (they get a flat "unauthorized" message) but are
+// stored in logs for debugging and pattern detection.
 func Authenticate(gen *TokenGenerator, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				unauthorized(w, "missing_token", "authorized header is required")
+				unauthorized(w, "missing_token", "authorization header is required")
 				return
 			}
 
-			// SplitN with n=2 so that an oddly-spaced token still yields two parts
-			// so a token containing spaces wouldn't be an issue at split.
-			// Usually, a Bearer token never contains spaces.
+			// SplitN with n=2 so that an oddly-spaced token still yields two
+			// parts; a token containing spaces wouldn't be an issue at split.
+			// Normally a Bearer token never contains spaces.
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 				unauthorized(w, "malformed_header", "authorization header must be 'Bearer <token>'")
@@ -87,15 +87,17 @@ func Authenticate(gen *TokenGenerator, logger *slog.Logger) func(http.Handler) h
 				unauthorized(w, "invalid_token", "token is invalid or expired")
 				return
 			}
+
 			userID, err := claims.UserID()
 			if err != nil {
 				// ValidateAccessToken already checked this; hitting it here
-				// means the validation path changed and this is a bug in
-				// our own code. Log at Error so it stands out.
+				// means the validation path changed and this is a bug in our
+				// own code. Log at Error so it stands out.
 				logger.Error("claims passed validation but user id parse failed", "err", err)
 				unauthorized(w, "invalid_token", "token is invalid or expired")
 				return
 			}
+
 			sessionID, err := claims.SessionID()
 			if err != nil {
 				logger.Error("claims passed validation but session id parse failed", "err", err)
@@ -104,15 +106,15 @@ func Authenticate(gen *TokenGenerator, logger *slog.Logger) func(http.Handler) h
 			}
 
 			ctx := context.WithValue(r.Context(), userIDKey, userID)
-			ctx = context.WithValue(ctx, sessionID, sessionID)
+			ctx = context.WithValue(ctx, sessionIDKey, sessionID)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// unauthorized writes a 401 Unauthorized with the standard JSON error envelope and the
-// WWW-Authenticate header required by RFC 6750.
+// unauthorized writes a 401 Unauthorized with the standard JSON error envelope
+// and the WWW-Authenticate header required by RFC 6750.
 //
 // The `code` is a short machine-readable string the client can branch on
 // (e.g. "missing_token" → redirect to login, "invalid_token" → refresh and
