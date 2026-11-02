@@ -1,7 +1,6 @@
 package user
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -37,8 +36,7 @@ type userResponse struct {
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "request body is not valid JSON")
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 

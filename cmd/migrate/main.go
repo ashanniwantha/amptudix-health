@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for pgx
@@ -29,9 +30,9 @@ func run() error {
 	}
 	cmd := os.Args[1]
 
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		return fmt.Errorf("DATABASE_URL is not set")
+	dsn, err := resolveDSN()
+	if err != nil {
+		return err
 	}
 
 	// goose.NewProvider requires a *sql.DB, not a pgxpool.Pool.
@@ -54,7 +55,7 @@ func run() error {
 		db,
 		migrations.FS,
 		goose.WithSessionLocker(locker),
-		goose.WithVerbose(true), // log each applied migration
+		goose.WithVerbose(true),
 	)
 	if err != nil {
 		return fmt.Errorf("create goose provider: %w", err)
@@ -114,4 +115,35 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command %q: want up, down, status, or version", cmd)
 	}
+}
+
+// resolveDSN prefers DATABASE_URL if set, otherwise builds a DSN from DB_*.
+// This lets the same binary run locally (DATABASE_URL exported by hand)
+// and inside Docker Compose (DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME
+// supplied by compose.yaml).
+func resolveDSN() (string, error) {
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		return dsn, nil
+	}
+
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	user := os.Getenv("DB_USER")
+	pass := os.Getenv("DB_PASSWORD")
+	name := os.Getenv("DB_NAME")
+
+	if host == "" || port == "" || user == "" || name == "" {
+		return "", fmt.Errorf(
+			"neither DATABASE_URL nor all of DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME are set",
+		)
+	}
+
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		url.QueryEscape(user),
+		url.QueryEscape(pass),
+		host,
+		port,
+		name,
+	), nil
 }
