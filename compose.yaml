@@ -1,0 +1,167 @@
+# Compose project name: keeps volume names predictable and avoids collisions
+# if another project on the same machine also defines "postgres_data".
+name: amptudix-health
+
+# Reusable log rotation. Docker's default json-file driver never deletes old
+# logs, so a busy container can fill the disk. 3 files x 10 MB = 30 MB cap
+# per service.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ----------------------------------------------------
+  # Go Application Service
+  # ----------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime # explicit stage, so a future debug stage cannot leak
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      # Application
+      APP_ENV: ${APP_ENV:-development}
+      APP_PORT: "8080"
+
+      # Database
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      DB_NAME: ${POSTGRES_DB:?POSTGRES_DB is required}
+      DB_MAX_CONNS: "20"
+      DB_MIN_CONNS: "5"
+      DB_CONNECT_TIMEOUT: 5s
+      DB_PING_TIMEOUT: 3s
+      DB_MAX_CONN_LIFETIME: 30m
+      DB_MAX_CONN_IDLE_TIME: 5m
+      DB_HEALTH_CHECK_PERIOD: 1m
+
+      # Redis
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: "6379" # internal container port — always 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+
+      # Auth
+      JWT_PRIVATE_KEY_PATH: /app/private.pem
+      JWT_PUBLIC_KEY_PATH: /app/public.pem
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-15m}
+
+      # Open Wearables
+      OPEN_WEARABLES_API_KEY: ${OPEN_WEARABLES_API_KEY:?required}
+      # host.docker.internal points at the host; localhost inside the
+      # container would point at the container itself.
+      OPEN_WEARABLES_API_URL: ${OPEN_WEARABLES_API_URL:-http://host.docker.internal:8000}
+      APP_ID: ${APP_ID:?required}
+      APP_SECRET: ${APP_SECRET:?required}
+    volumes:
+      # Read-only bind mounts: the container can read the keys but cannot
+      # modify them. The keys are never baked into the image.
+      - ./private.pem:/app/private.pem:ro
+      - ./public.pem:/app/public.pem:ro
+    # Linux Docker Engine does not resolve host.docker.internal by default;
+    # this makes it work on Linux, macOS, and Windows.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The API must start only after Postgres/Redis are healthy AND the
+    # one-off migrate container has exited 0.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app_network
+
+  # ----------------------------------------------------
+  # One-off Migration Runner
+  # ----------------------------------------------------
+  # This service is a job, not a long-running server. It exits when
+  # migrations are done, and "api" waits for a successful exit.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    entrypoint: [ "/app/migrate" ]
+    command: [ "up" ]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      DB_NAME: ${POSTGRES_DB:?POSTGRES_DB is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No restart: a failed migration should surface loudly, not loop forever.
+    restart: "no"
+    logging: *default-logging
+    networks:
+      - app_network
+
+  # ----------------------------------------------------
+  # PostgreSQL Database Service
+  # ----------------------------------------------------
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      # PostgreSQL 18 moved PGDATA to /var/lib/postgresql/<major>/docker
+      # and the declared VOLUME to /var/lib/postgresql. Mounting the old
+      # /data path makes the container crash on startup.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      # TCP loopback avoids mistaking the temporary socket-only init
+      # server for the final listener.
+      test: [ "CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app_network
+
+  # ----------------------------------------------------
+  # Redis Cache Service
+  # ----------------------------------------------------
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-h", "127.0.0.1", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

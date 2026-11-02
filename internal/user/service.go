@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/ashanniwantha/amptudix-health/internal/client/openwearables"
 	"github.com/ashanniwantha/amptudix-health/internal/database"
 )
 
@@ -16,20 +17,51 @@ type TxRunner interface {
 	WithTransaction(ctx context.Context, fn func(context.Context) error) error
 }
 
-// OWUserCreator is the piece of Open Wearables the service needs.
-// The consumer defines the contract; the client package satisfies it.
-type OWUserCreator interface {
+// OWClient is the Open Wearables surface the user service needs.
+type OWClient interface {
 	CreateUser(ctx context.Context, email, firstName, lastName string) (uuid.UUID, error)
+	CreateUserToken(ctx context.Context, owUserID uuid.UUID) (*openwearables.TokenResponse, error)
+}
+
+type SDKToken struct {
+	OpenWearablesUserID uuid.UUID
+	Token               *openwearables.TokenResponse
 }
 
 type Service struct {
 	repo Repository
 	tx   TxRunner
-	ow   OWUserCreator
+	db   database.DBTX
+	ow   OWClient
 }
 
-func NewService(repo Repository, tx TxRunner, ow OWUserCreator) *Service {
-	return &Service{repo: repo, tx: tx, ow: ow}
+func NewService(repo Repository, tx TxRunner, db database.DBTX, ow OWClient) *Service {
+	return &Service{repo: repo, tx: tx, db: db, ow: ow}
+}
+
+// GetOpenWearablesID resolves a local user ID to the stored OW UUID.
+func (s *Service) GetOpenWearablesID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	u, err := s.repo.GetByID(ctx, s.db, userID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if u.OW_ID == nil {
+		return uuid.Nil, ErrNotLinked
+	}
+	return *u.OW_ID, nil
+}
+
+// CreateSDKToken mints a short-lived, user-scoped token for the Android SDK.
+func (s *Service) CreateSDKToken(ctx context.Context, userID uuid.UUID) (*SDKToken, error) {
+	owID, err := s.GetOpenWearablesID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	tok, err := s.ow.CreateUserToken(ctx, owID)
+	if err != nil {
+		return nil, err
+	}
+	return &SDKToken{OpenWearablesUserID: owID, Token: tok}, nil
 }
 
 type CreateInput struct {

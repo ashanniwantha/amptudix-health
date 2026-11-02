@@ -2,8 +2,11 @@ package auth
 
 import (
 	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -126,4 +129,48 @@ func (g *TokenGenerator) ValidateAccessToken(tokenStr string) (*Claims, error) {
 	}
 
 	return claims, nil
+}
+
+// ParseRSAPrivateKey reads a PEM-encoded PKCS#8 RSA private key from disk.
+// The file is read once at startup; the returned key is safe for concurrent
+// signing.
+func ParseRSAPrivateKey(path string) (*rsa.PrivateKey, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read private key %q: %w", path, err)
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil, fmt.Errorf("private key %q: not PEM-encoded", path)
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key %q: %w", path, err)
+	}
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key %q: not an RSA key", path)
+	}
+	return rsaKey, nil
+}
+
+// ParseRSAPublicKey reads a PEM-encoded PKIX RSA public key from disk.
+func ParseRSAPublicKey(path string) (*rsa.PublicKey, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read public key %q: %w", path, err)
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil, fmt.Errorf("public key %q: not PEM-encoded", path)
+	}
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse public key %q: %w", path, err)
+	}
+	rsaKey, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("public key %q: not an RSA key", path)
+	}
+	return rsaKey, nil
 }

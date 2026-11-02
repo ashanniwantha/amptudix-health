@@ -138,6 +138,9 @@ var (
 	// OW_ID. Callers should treat this as idempotent success, not an
 	// error, unless they need to force a re-link.
 	ErrAlreadyLinked = errors.New("user is already linked to Open Wearables")
+
+	// ErrNotLinked is returned when a user exists locally but has no OW_ID yet.
+	ErrNotLinked = errors.New("user is not linked to Open Wearables")
 )
 
 // ============================================================

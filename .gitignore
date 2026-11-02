@@ -10,3 +10,7 @@
 *.env.*
 !.env.example
 credentials.json
+
+# RSA key pair — never commit
+*.pem
+!public.pem.bak

@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/ashanniwantha/amptudix-health/internal/client/openwearables"
 	"github.com/ashanniwantha/amptudix-health/internal/httpx"
 )
 
@@ -73,6 +74,40 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 	default:
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "something went wrong")
 	}
+}
+
+func (h *Handler) CreateSDKToken(w http.ResponseWriter, r *http.Request) {
+	userID, err := uuid.Parse(chi.URLParam(r, "userID"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_user_id", "user id must be a UUID")
+		return
+	}
+
+	res, err := h.svc.CreateSDKToken(r.Context(), userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUserNotFound):
+			httpx.WriteError(w, http.StatusNotFound, "user_not_found", err.Error())
+		case errors.Is(err, ErrNotLinked):
+			httpx.WriteError(w, http.StatusConflict, "not_linked", "user has not been linked to Open Wearables")
+		default:
+			var apiErr *openwearables.APIError
+			if errors.As(err, &apiErr) {
+				httpx.WriteError(w, http.StatusBadGateway, "open_wearables_error", apiErr.Detail)
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "could not create SDK token")
+		}
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"userId":       res.OpenWearablesUserID,
+		"accessToken":  res.Token.AccessToken,
+		"refreshToken": res.Token.RefreshToken,
+		"tokenType":    res.Token.TokenType,
+		"expiresIn":    res.Token.ExpiresIn,
+	})
 }
 
 func toResponse(u *User) userResponse {

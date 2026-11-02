@@ -1,56 +1,65 @@
 # syntax=docker/dockerfile:1
 
 # ==========================================
-# STAGE 1: Build the Go Application Binary
+# STAGE 1: Build the Go binaries
 # ==========================================
-# Pinning explicit versions of Go and Alpine ensures build determinism and consistency across environments.
-FROM golang:1.26-alpine3.24 AS builder
+# Pin a specific minor version for reproducible builds. Upgrading Go is an
+# explicit commit, not something that silently changes when a tag is re-pushed.
+FROM golang:1.27-alpine3.24 AS builder
 
-# Install root CA certificates required for HTTPS external API requests.
-RUN apk add --no-cache git ca-certificates && update-ca-certificates
+# CA certificates are needed only if the build ever fetches over HTTPS.
+# They are copied into the distroless runtime by the base image itself.
+RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
 
-# Separate dependency downloading into its own step to leverage Docker layer caching.
-# This prevents downloading modules again if only application code changes.
+# Cache dependencies separately from source so a code-only change does not
+# re-download modules.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy all directories, including cmd/ and internal/, maintaining project hierarchy.
 COPY . .
 
-# Compile a highly optimized, statically linked binary.
-# - CGO_ENABLED=0 creates a self-contained binary with zero dynamic C-library dependencies.
-# - ldflags "-s -w" strips debug symbols and troubleshooting metrics, dropping the final size by ~40%.
+# CGO_ENABLED=0 produces a fully static binary with no libc dependency,
+# which is what allows the distroless/static runtime to contain only the
+# binary and its data.
+# -trimpath removes absolute build paths from the binary.
+# -s -w strips the symbol table and DWARF debug info (~40% smaller).
+# Both api and migrate are built from the same source tree.
 RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
     -ldflags="-s -w" \
-    -o /bin/server \
-    ./cmd/api/main.go
+    -o /out/api \
+    ./cmd/api && \
+    CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/migrate \
+    ./cmd/migrate
 
 
 # ==========================================
-# STAGE 2: Secure, Minimal Runtime Environment
+# STAGE 2: Minimal, non-root runtime
 # ==========================================
-# Using the minimal Alpine runtime to eliminate vulnerabilities present in full Linux distributions.
-FROM alpine:3.24.3
-
-# Create an explicit unprivileged user and group using a fixed high-number ID (10001).
-# This prevents host system UID collision and satisfies enterprise container security scanning policies.
-RUN addgroup -g 10001 appgroup && \
-    adduser -u 10001 -G appgroup -h /home/appuser -D appuser
+# gcr.io/distroless/static-debian12:nonroot is ~2 MB, contains CA
+# certificates and timezone data, has no shell or package manager, and runs
+# as a non-root user out of the box. For a statically linked Go binary this
+# is the smallest practical attack surface.
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 WORKDIR /app
 
-# Extract only the necessary structural assets from the builder stage.
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder --chown=appuser:appgroup /bin/server ./server
+# Copy both binaries. --chown ensures they are owned by the nonroot user
+# that the image runs as.
+COPY --from=builder --chown=nonroot:nonroot /out/api     ./api
+COPY --from=builder --chown=nonroot:nonroot /out/migrate ./migrate
 
-# Switch context completely away from root to the secure user.
-USER appuser:appgroup
+# Distroless:nonroot already sets USER nonroot:nonroot; this line is
+# explicit for clarity and for scanners that require it.
+USER nonroot:nonroot
 
-# Inform container runtimes that the application listens on port 8080.
 EXPOSE 8080
 
-# Utilizing exec form directly executes the application as PID 1.
-# This allows standard Unix signals (like SIGTERM) to reach Go directly for graceful shutdown management.
-ENTRYPOINT ["./server"]
+# Exec form: the process becomes PID 1 and receives SIGTERM directly,
+# which is required for graceful shutdown.
+ENTRYPOINT ["./api"]
