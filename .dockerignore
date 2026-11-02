@@ -1,0 +1,19 @@
+# Ignore local environment secrets
+.env
+.env.*
+*.env
+
+# Ignore version control metadata
+.git
+.gitignore
+
+# Ignore local builds, system, and IDE settings
+bin/
+dist/
+.idea/
+.vscode/
+*.backend.test
+
+# Ignore local Go toolchain components
+vendor/
+.go/
